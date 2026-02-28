@@ -1,90 +1,12 @@
-const { app, BrowserWindow, shell, Menu, protocol } = require('electron');
+const { app, BrowserWindow, shell, Menu } = require('electron');
+const http = require('http');
 const path = require('path');
 
 const APP_URL = 'https://storybreak.app/StoryBreak_Accounts.html';
 const APP_NAME = 'StoryBreak';
-const PROTOCOL = 'storybreak';
 
 let mainWindow;
-
-// Register as handler for storybreak:// URLs (for OAuth callback)
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
-  }
-} else {
-  app.setAsDefaultProtocolClient(PROTOCOL);
-}
-
-// macOS: handle storybreak:// URL when app is already running
-app.on('open-url', (event, url) => {
-  event.preventDefault();
-  handleAuthCallback(url);
-});
-
-// Windows/Linux: handle storybreak:// URL via second instance
-const gotTheLock = app.requestSingleInstanceLock();
-if (!gotTheLock) {
-  app.quit();
-} else {
-  app.on('second-instance', (event, commandLine) => {
-    // The deep link URL is the last argument
-    const url = commandLine.find(arg => arg.startsWith(`${PROTOCOL}://`));
-    if (url) handleAuthCallback(url);
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
-  });
-}
-
-// Parse OAuth callback URL and inject tokens into the web app
-function handleAuthCallback(url) {
-  if (!mainWindow || !url.startsWith(`${PROTOCOL}://auth-callback`)) return;
-
-  // Bring app to front
-  mainWindow.show();
-  mainWindow.focus();
-
-  // Extract tokens from the URL fragment (#access_token=...&refresh_token=...)
-  const fragment = url.split('#')[1];
-  if (!fragment) return;
-
-  const params = new URLSearchParams(fragment);
-  const accessToken = params.get('access_token');
-  const refreshToken = params.get('refresh_token');
-
-  if (accessToken && refreshToken) {
-    // First make sure we're on the StoryBreak page
-    const currentUrl = mainWindow.webContents.getURL();
-    if (!currentUrl.startsWith('https://storybreak.app')) {
-      mainWindow.loadURL(APP_URL);
-      mainWindow.webContents.once('did-finish-load', () => {
-        injectSession(accessToken, refreshToken);
-      });
-    } else {
-      injectSession(accessToken, refreshToken);
-    }
-  }
-}
-
-function injectSession(accessToken, refreshToken) {
-  // Inject the tokens into Supabase via the web app's client
-  const js = `
-    (async () => {
-      try {
-        if (typeof _sbc !== 'undefined' && _sbc.auth) {
-          const { error } = await _sbc.auth.setSession({
-            access_token: ${JSON.stringify(accessToken)},
-            refresh_token: ${JSON.stringify(refreshToken)}
-          });
-          if (error) console.error('Session inject error:', error);
-        }
-      } catch(e) { console.error('Session inject failed:', e); }
-    })();
-  `;
-  mainWindow.webContents.executeJavaScript(js);
-}
+let authServer = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -108,7 +30,6 @@ function createWindow() {
 
   mainWindow.loadURL(APP_URL);
 
-  // Show window when content is ready (prevents white flash)
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
@@ -127,28 +48,119 @@ function createWindow() {
     // Allow navigating within storybreak.app
     if (url.startsWith('https://storybreak.app')) return;
 
-    // Intercept Supabase OAuth authorize — rewrite redirect and open in system browser
+    // Intercept Supabase OAuth — open in system browser with local callback
     if (url.includes('supabase.co/auth/v1/authorize')) {
       event.preventDefault();
-      try {
-        const authUrl = new URL(url);
-        // Rewrite redirect_to so callback comes back via storybreak:// protocol
-        authUrl.searchParams.set('redirect_to', `${PROTOCOL}://auth-callback`);
-        shell.openExternal(authUrl.toString());
-      } catch (e) {
-        shell.openExternal(url);
-      }
+      startOAuthFlow(url);
       return;
     }
 
-    // Block all other external navigation — open in system browser
+    // Block all other external navigation
     event.preventDefault();
     shell.openExternal(url);
   });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    stopAuthServer();
   });
+}
+
+// Start a local HTTP server to catch the OAuth callback.
+// Supabase returns tokens in the URL fragment (#access_token=...).
+// Since fragments aren't sent to the server, we serve a tiny HTML page
+// that reads the fragment client-side and posts it back.
+function startOAuthFlow(originalUrl) {
+  stopAuthServer();
+
+  authServer = http.createServer((req, res) => {
+    if (req.url.startsWith('/auth-callback') && req.method === 'GET') {
+      // Serve a page that extracts the fragment and posts tokens back
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`<!DOCTYPE html>
+<html><head><title>Signing in...</title>
+<style>body{background:#111213;color:#E8DCC8;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}
+.box{text-align:center;}.spinner{width:30px;height:30px;border:3px solid #333;border-top:3px solid #D4691C;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px;}
+@keyframes spin{to{transform:rotate(360deg)}}h2{font-size:18px;margin:0 0 6px;}p{color:#666;font-size:13px;}</style></head>
+<body><div class="box"><div class="spinner"></div><h2>Signing in to StoryBreak...</h2><p>You can close this tab.</p></div>
+<script>
+const hash = window.location.hash.substring(1);
+if (hash) {
+  fetch('/auth-tokens', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body: hash })
+    .then(() => { document.querySelector('h2').textContent = '✓ Signed in! Return to StoryBreak.'; document.querySelector('.spinner').style.display='none'; })
+    .catch(() => { document.querySelector('h2').textContent = 'Something went wrong.'; });
+} else {
+  document.querySelector('h2').textContent = 'No auth data received.';
+  document.querySelector('.spinner').style.display='none';
+}
+</script></body></html>`);
+    } else if (req.url === '/auth-tokens' && req.method === 'POST') {
+      // Receive the tokens posted from the callback page
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        res.writeHead(200);
+        res.end('ok');
+        const params = new URLSearchParams(body);
+        const accessToken = params.get('access_token');
+        const refreshToken = params.get('refresh_token');
+        if (accessToken && refreshToken) {
+          injectSession(accessToken, refreshToken);
+        }
+        // Close server after a short delay
+        setTimeout(stopAuthServer, 2000);
+      });
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  // Listen on a random available port
+  authServer.listen(0, '127.0.0.1', () => {
+    const port = authServer.address().port;
+    const callbackUrl = `http://localhost:${port}/auth-callback`;
+
+    try {
+      const authUrl = new URL(originalUrl);
+      authUrl.searchParams.set('redirect_to', callbackUrl);
+      shell.openExternal(authUrl.toString());
+    } catch (e) {
+      shell.openExternal(originalUrl);
+      stopAuthServer();
+    }
+  });
+
+  // Auto-close server after 5 minutes if no callback received
+  setTimeout(stopAuthServer, 5 * 60 * 1000);
+}
+
+function stopAuthServer() {
+  if (authServer) {
+    try { authServer.close(); } catch (e) {}
+    authServer = null;
+  }
+}
+
+function injectSession(accessToken, refreshToken) {
+  if (!mainWindow) return;
+  mainWindow.show();
+  mainWindow.focus();
+
+  const js = `
+    (async () => {
+      try {
+        if (typeof _sbc !== 'undefined' && _sbc.auth) {
+          const { error } = await _sbc.auth.setSession({
+            access_token: ${JSON.stringify(accessToken)},
+            refresh_token: ${JSON.stringify(refreshToken)}
+          });
+          if (error) console.error('StoryBreak session error:', error);
+        }
+      } catch(e) { console.error('StoryBreak session inject failed:', e); }
+    })();
+  `;
+  mainWindow.webContents.executeJavaScript(js);
 }
 
 function buildMenu() {
@@ -246,5 +258,4 @@ app.on('window-all-closed', () => {
   }
 });
 
-// Set app name
 app.setName(APP_NAME);
