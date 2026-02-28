@@ -26,7 +26,7 @@ function createWindow() {
       spellcheck: true,
     },
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    trafficLightPosition: { x: 15, y: 15 },
+    trafficLightPosition: { x: 12, y: 10 },
   });
 
   mainWindow.loadURL(APP_URL);
@@ -35,37 +35,53 @@ function createWindow() {
     mainWindow.show();
   });
 
-  // After the page loads, override oauthSignIn to use our IPC bridge
+  // Inject a draggable title bar region so the window can be moved
+  // and the traffic lights don't overlap with the app's logo
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow.webContents.executeJavaScript(`
       (function() {
-        // Override the OAuth sign-in to go through Electron's system browser
-        const _origOAuth = typeof oauthSignIn === 'function' ? oauthSignIn : null;
-        if (_origOAuth) {
-          window.oauthSignIn = async function(provider) {
-            try {
-              const { data, error } = await _sbc.auth.signInWithOAuth({
-                provider,
-                options: {
-                  redirectTo: window.location.href.split('#')[0],
-                  skipBrowserRedirect: true
-                }
-              });
-              if (error) {
-                if (typeof showAuthMsg === 'function') showAuthMsg('Could not connect to ' + provider + '. Try again.', 'err');
-                return;
-              }
-              if (data?.url && window.storybreakNative?.openOAuth) {
-                window.storybreakNative.openOAuth(data.url);
-              }
-            } catch(e) {
-              if (typeof showAuthMsg === 'function') showAuthMsg('Something went wrong. Try again.', 'err');
-            }
-          };
-        }
+        if (document.getElementById('_sb_titlebar')) return;
+        var bar = document.createElement('div');
+        bar.id = '_sb_titlebar';
+        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:38px;' +
+          '-webkit-app-region:drag;z-index:99999;background:#111213;';
+        document.body.prepend(bar);
+        document.body.style.paddingTop = '38px';
+        // Make sure buttons/links inside the app are still clickable (not drag)
+        document.querySelectorAll('button, a, input, select, textarea').forEach(function(el) {
+          el.style.webkitAppRegion = 'no-drag';
+        });
       })();
     `);
   });
+
+  // ── PRIMARY OAuth interception: will-navigate fires BEFORE the page unloads ──
+  // event.preventDefault() keeps the current page intact while we handle OAuth
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url.startsWith('https://storybreak.app')) return;
+    event.preventDefault();
+    if (url.includes('supabase.co/auth/v1/authorize')) {
+      console.log('[StoryBreak] Intercepted OAuth via will-navigate');
+      startOAuthFlow(url);
+    } else {
+      shell.openExternal(url);
+    }
+  });
+
+  // ── SAFETY NET: if will-navigate missed it, catch at network level ──
+  // Cancel the request AND reload the page (since it may have started unloading)
+  mainWindow.webContents.session.webRequest.onBeforeRequest(
+    { urls: ['*://*.supabase.co/auth/v1/authorize*'] },
+    (details, callback) => {
+      console.log('[StoryBreak] Intercepted OAuth via webRequest (fallback)');
+      callback({ cancel: true });
+      startOAuthFlow(details.url);
+      // Reload the page since it may have started unloading
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.loadURL(APP_URL);
+      }
+    }
+  );
 
   // Open external links in system browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -74,17 +90,6 @@ function createWindow() {
     }
     shell.openExternal(url);
     return { action: 'deny' };
-  });
-
-  // Fallback: intercept navigation for non-storybreak URLs
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (url.startsWith('https://storybreak.app')) return;
-    event.preventDefault();
-    if (url.includes('supabase.co/auth/v1/authorize')) {
-      startOAuthFlow(url);
-    } else {
-      shell.openExternal(url);
-    }
   });
 
   mainWindow.on('closed', () => {
