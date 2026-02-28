@@ -66,40 +66,31 @@ function createWindow() {
   });
 }
 
-// Start a local HTTP server to catch the OAuth callback.
-// Supabase returns tokens in the URL fragment (#access_token=...).
-// Since fragments aren't sent to the server, we serve a tiny HTML page
-// that reads the fragment client-side and posts it back.
+// OAuth flow for desktop: opens auth in the system browser, redirecting back
+// to storybreak.app with a desktop_auth_port param. The web app detects this
+// and POSTs tokens to our local server, which injects them into the Electron app.
 function startOAuthFlow(originalUrl) {
   stopAuthServer();
 
   authServer = http.createServer((req, res) => {
-    if (req.url.startsWith('/auth-callback') && req.method === 'GET') {
-      // Serve a page that extracts the fragment and posts tokens back
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(`<!DOCTYPE html>
-<html><head><title>Signing in...</title>
-<style>body{background:#111213;color:#E8DCC8;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}
-.box{text-align:center;}.spinner{width:30px;height:30px;border:3px solid #333;border-top:3px solid #D4691C;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 16px;}
-@keyframes spin{to{transform:rotate(360deg)}}h2{font-size:18px;margin:0 0 6px;}p{color:#666;font-size:13px;}</style></head>
-<body><div class="box"><div class="spinner"></div><h2>Signing in to StoryBreak...</h2><p>You can close this tab.</p></div>
-<script>
-const hash = window.location.hash.substring(1);
-if (hash) {
-  fetch('/auth-tokens', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body: hash })
-    .then(() => { document.querySelector('h2').textContent = '✓ Signed in! Return to StoryBreak.'; document.querySelector('.spinner').style.display='none'; })
-    .catch(() => { document.querySelector('h2').textContent = 'Something went wrong.'; });
-} else {
-  document.querySelector('h2').textContent = 'No auth data received.';
-  document.querySelector('.spinner').style.display='none';
-}
-</script></body></html>`);
-    } else if (req.url === '/auth-tokens' && req.method === 'POST') {
-      // Receive the tokens posted from the callback page
+    // CORS preflight for cross-origin POST from storybreak.app
+    if (req.method === 'OPTIONS') {
+      res.writeHead(200, {
+        'Access-Control-Allow-Origin': 'https://storybreak.app',
+        'Access-Control-Allow-Methods': 'POST',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      });
+      res.end();
+      return;
+    }
+
+    if (req.url === '/auth-tokens' && req.method === 'POST') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
       req.on('end', () => {
-        res.writeHead(200);
+        res.writeHead(200, {
+          'Access-Control-Allow-Origin': 'https://storybreak.app',
+        });
         res.end('ok');
         const params = new URLSearchParams(body);
         const accessToken = params.get('access_token');
@@ -107,7 +98,6 @@ if (hash) {
         if (accessToken && refreshToken) {
           injectSession(accessToken, refreshToken);
         }
-        // Close server after a short delay
         setTimeout(stopAuthServer, 2000);
       });
     } else {
@@ -116,10 +106,10 @@ if (hash) {
     }
   });
 
-  // Listen on a random available port
   authServer.listen(0, '127.0.0.1', () => {
     const port = authServer.address().port;
-    const callbackUrl = `http://localhost:${port}/auth-callback`;
+    // Redirect to storybreak.app (already in Supabase allowed list) with our port
+    const callbackUrl = `https://storybreak.app/StoryBreak_Accounts.html?desktop_auth_port=${port}`;
 
     try {
       const authUrl = new URL(originalUrl);
