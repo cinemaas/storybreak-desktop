@@ -1,0 +1,45 @@
+appId: app.storybreak.desktop
+productName: StoryBreak
+copyright: Copyright © 2025 StoryBreak
+
+directories:
+  output: dist
+
+files:
+  - main.js
+  - preload.js
+  - package.json
+  - icons/**/*
+
+mac:
+  category: public.app-category.productivity
+  icon: icons/icon.icns
+  target:
+    - dmg
+    - zip
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  darkModeSupport: true
+
+win:
+  icon: icons/icon.ico
+  target:
+    - nsis
+    - portable
+
+nsis:
+  oneClick: true
+  perMachine: false
+  allowElevation: true
+  installerIcon: icons/icon.ico
+  uninstallerIcon: icons/icon.ico
+
+dmg:
+  icon: icons/icon.icns
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications

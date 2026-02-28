@@ -1,0 +1,17 @@
+{
+  "name": "storybreak-desktop",
+  "version": "1.0.0",
+  "description": "StoryBreak — Build Your Story, Card by Card",
+  "author": "StoryBreak <support@storybreak.app>",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:all": "electron-builder --mac --win"
+  },
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}
