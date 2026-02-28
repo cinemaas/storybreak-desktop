@@ -44,12 +44,24 @@ function createWindow() {
   });
 
   // Handle navigation to external sites
+  // Allow OAuth flow domains (Google, Discord, Facebook, Supabase) inside the window.
+  // Block everything else and open in system browser.
+  const allowedNavPatterns = [
+    'storybreak.app',
+    'supabase.co',
+    '.google.com',     // accounts.google.com, consent.google.com, etc.
+    'googleapis.com',
+    '.discord.com',
+    'discord.gg',
+    '.facebook.com',
+    '.fbcdn.net',
+    'appleid.apple.com',
+  ];
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith('https://storybreak.app') &&
-        !url.includes('supabase.co') &&
-        !url.includes('accounts.google.com') &&
-        !url.includes('discord.com') &&
-        !url.includes('facebook.com')) {
+    const isAllowed = allowedNavPatterns.some(p => {
+      try { return new URL(url).hostname.endsWith(p.replace(/^\./, '')) || url.includes(p); } catch { return false; }
+    });
+    if (!isAllowed) {
       event.preventDefault();
       shell.openExternal(url);
     }
