@@ -67,43 +67,92 @@ function createWindow() {
   });
 }
 
-// OAuth flow for desktop:
-// 1. Start local server on fixed port AUTH_PORT
-// 2. Open the original OAuth URL in system browser (no URL modifications)
-// 3. After auth, Supabase redirects to storybreak.app as normal
-// 4. The web app silently POSTs tokens to localhost:AUTH_PORT via hidden iframe
-// 5. We inject the tokens into Electron's BrowserWindow
+// OAuth flow for desktop (same pattern as VS Code, Spotify, etc.):
+// 1. Start local HTTP server on fixed port
+// 2. Rewrite Supabase redirect_to → http://localhost:47836/callback
+// 3. Open modified OAuth URL in system browser
+// 4. After auth, Supabase redirects browser directly to our local server
+// 5. Tokens arrive in URL fragment — we serve a page that reads them client-side
+// 6. Page POSTs tokens back to our server, we inject into Electron
+//
+// REQUIRES: http://localhost:47836 added to Supabase redirect URLs in dashboard
 function startOAuthFlow(originalUrl) {
   stopAuthServer();
 
+  const CALLBACK_PAGE = `<!DOCTYPE html><html><head><title>StoryBreak</title>
+<style>body{background:#111213;color:#E8DCC8;font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+.box{text-align:center}.spinner{width:30px;height:30px;border:3px solid #333;
+border-top:3px solid #D4691C;border-radius:50%;animation:spin 1s linear infinite;
+margin:0 auto 16px}@keyframes spin{to{transform:rotate(360deg)}}
+h2{font-size:18px;margin:0 0 6px}p{color:#888;font-size:13px;margin:0}</style></head>
+<body><div class="box"><div class="spinner"></div>
+<h2 id="msg">Signing in to StoryBreak...</h2><p>Please wait</p></div>
+<script>
+var h = window.location.hash.substring(1);
+if (h) {
+  fetch('/auth-tokens', {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:h})
+    .then(function(){
+      document.getElementById('msg').textContent='\\u2713 Signed in! You can close this tab.';
+      document.querySelector('.spinner').style.display='none';
+      document.querySelector('p').textContent='Switch back to the StoryBreak app.';
+    })
+    .catch(function(){
+      document.getElementById('msg').textContent='Something went wrong.';
+      document.querySelector('.spinner').style.display='none';
+    });
+} else {
+  document.getElementById('msg').textContent='No auth data received.';
+  document.querySelector('.spinner').style.display='none';
+}
+</script></body></html>`;
+
   authServer = http.createServer((req, res) => {
+    // Callback page: serves HTML that reads the URL fragment client-side
+    if (req.url.startsWith('/callback')) {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(CALLBACK_PAGE);
+      return;
+    }
+
+    // Token receiver: gets tokens POSTed from the callback page
     if (req.url === '/auth-tokens' && req.method === 'POST') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
       req.on('end', () => {
+        res.writeHead(200);
+        res.end('ok');
         const params = new URLSearchParams(body);
         const accessToken = params.get('access_token');
         const refreshToken = params.get('refresh_token');
         if (accessToken && refreshToken) {
           injectSession(accessToken, refreshToken);
         }
-        // Response loads in hidden iframe — user never sees this
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end('ok');
         setTimeout(stopAuthServer, 5000);
       });
-    } else {
-      res.writeHead(200);
-      res.end('ok');
+      return;
     }
+
+    res.writeHead(404);
+    res.end();
   });
 
   authServer.listen(AUTH_PORT, '127.0.0.1', () => {
-    shell.openExternal(originalUrl);
+    // Rewrite redirect_to to point to our local callback server
+    try {
+      const authUrl = new URL(originalUrl);
+      authUrl.searchParams.set('redirect_to', `http://localhost:${AUTH_PORT}/callback`);
+      console.log('[StoryBreak] OAuth: opening browser with redirect to localhost:' + AUTH_PORT);
+      shell.openExternal(authUrl.toString());
+    } catch (e) {
+      console.error('[StoryBreak] OAuth URL parse error:', e);
+      shell.openExternal(originalUrl);
+      stopAuthServer();
+    }
   });
 
-  authServer.on('error', () => {
-    // Port in use — open OAuth anyway (auth still works on web)
+  authServer.on('error', (err) => {
+    console.error('[StoryBreak] Auth server error:', err.message);
     shell.openExternal(originalUrl);
   });
 
