@@ -4,6 +4,7 @@ const path = require('path');
 
 const APP_URL = 'https://storybreak.app/StoryBreak_Accounts.html';
 const APP_NAME = 'StoryBreak';
+const AUTH_PORT = 47836; // Fixed port for OAuth token bridge
 
 let mainWindow;
 let authServer = null;
@@ -66,13 +67,37 @@ function createWindow() {
   });
 }
 
-// OAuth flow for desktop: opens auth in the system browser, redirecting back
-// to storybreak.app with a desktop_auth_port param. The web app detects this
-// and POSTs tokens to our local server, which injects them into the Electron app.
+// OAuth flow for desktop:
+// 1. Start local server on fixed port AUTH_PORT
+// 2. Open the original OAuth URL in system browser (no URL modifications)
+// 3. After auth, Supabase redirects to storybreak.app as normal
+// 4. The web app detects our server via a ping to localhost:AUTH_PORT
+// 5. Web app form-POSTs tokens to our server, we inject into Electron
 function startOAuthFlow(originalUrl) {
   stopAuthServer();
 
   authServer = http.createServer((req, res) => {
+    // Ping endpoint: web app checks if desktop app is waiting for tokens
+    if (req.url === '/ping' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Access-Control-Allow-Origin': 'https://storybreak.app',
+        'Content-Type': 'text/plain',
+      });
+      res.end('storybreak-desktop');
+      return;
+    }
+
+    // CORS preflight for the ping check
+    if (req.url === '/ping' && req.method === 'OPTIONS') {
+      res.writeHead(200, {
+        'Access-Control-Allow-Origin': 'https://storybreak.app',
+        'Access-Control-Allow-Methods': 'GET',
+      });
+      res.end();
+      return;
+    }
+
+    // Token endpoint: receives tokens via form POST from the web app
     if (req.url === '/auth-tokens' && req.method === 'POST') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
@@ -97,19 +122,14 @@ function startOAuthFlow(originalUrl) {
     }
   });
 
-  authServer.listen(0, '127.0.0.1', () => {
-    const port = authServer.address().port;
-    // Redirect to storybreak.app (already in Supabase allowed list) with our port
-    const callbackUrl = `https://storybreak.app/StoryBreak_Accounts.html?desktop_auth_port=${port}`;
+  authServer.listen(AUTH_PORT, '127.0.0.1', () => {
+    // Open the original OAuth URL unmodified — no redirect_to changes
+    shell.openExternal(originalUrl);
+  });
 
-    try {
-      const authUrl = new URL(originalUrl);
-      authUrl.searchParams.set('redirect_to', callbackUrl);
-      shell.openExternal(authUrl.toString());
-    } catch (e) {
-      shell.openExternal(originalUrl);
-      stopAuthServer();
-    }
+  authServer.on('error', () => {
+    // Port in use — open OAuth anyway (bridge won't work but auth still happens on web)
+    shell.openExternal(originalUrl);
   });
 
   // Auto-close server after 5 minutes if no callback received
