@@ -1,10 +1,10 @@
-const { app, BrowserWindow, shell, Menu } = require('electron');
+const { app, BrowserWindow, shell, Menu, ipcMain } = require('electron');
 const http = require('http');
 const path = require('path');
 
 const APP_URL = 'https://storybreak.app/StoryBreak_Accounts.html';
 const APP_NAME = 'StoryBreak';
-const AUTH_PORT = 47836; // Fixed port for OAuth token bridge
+const AUTH_PORT = 47836;
 
 let mainWindow;
 let authServer = null;
@@ -35,6 +35,38 @@ function createWindow() {
     mainWindow.show();
   });
 
+  // After the page loads, override oauthSignIn to use our IPC bridge
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow.webContents.executeJavaScript(`
+      (function() {
+        // Override the OAuth sign-in to go through Electron's system browser
+        const _origOAuth = typeof oauthSignIn === 'function' ? oauthSignIn : null;
+        if (_origOAuth) {
+          window.oauthSignIn = async function(provider) {
+            try {
+              const { data, error } = await _sbc.auth.signInWithOAuth({
+                provider,
+                options: {
+                  redirectTo: window.location.href.split('#')[0],
+                  skipBrowserRedirect: true
+                }
+              });
+              if (error) {
+                if (typeof showAuthMsg === 'function') showAuthMsg('Could not connect to ' + provider + '. Try again.', 'err');
+                return;
+              }
+              if (data?.url && window.storybreakNative?.openOAuth) {
+                window.storybreakNative.openOAuth(data.url);
+              }
+            } catch(e) {
+              if (typeof showAuthMsg === 'function') showAuthMsg('Something went wrong. Try again.', 'err');
+            }
+          };
+        }
+      })();
+    `);
+  });
+
   // Open external links in system browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://storybreak.app')) {
@@ -44,21 +76,15 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  // Handle navigation — intercept OAuth and open in system browser
+  // Fallback: intercept navigation for non-storybreak URLs
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    // Allow navigating within storybreak.app
     if (url.startsWith('https://storybreak.app')) return;
-
-    // Intercept Supabase OAuth — open in system browser with local callback
-    if (url.includes('supabase.co/auth/v1/authorize')) {
-      event.preventDefault();
-      startOAuthFlow(url);
-      return;
-    }
-
-    // Block all other external navigation
     event.preventDefault();
-    shell.openExternal(url);
+    if (url.includes('supabase.co/auth/v1/authorize')) {
+      startOAuthFlow(url);
+    } else {
+      shell.openExternal(url);
+    }
   });
 
   mainWindow.on('closed', () => {
@@ -67,15 +93,13 @@ function createWindow() {
   });
 }
 
-// OAuth flow for desktop (same pattern as VS Code, Spotify, etc.):
-// 1. Start local HTTP server on fixed port
-// 2. Rewrite Supabase redirect_to → http://localhost:47836/callback
-// 3. Open modified OAuth URL in system browser
-// 4. After auth, Supabase redirects browser directly to our local server
-// 5. Tokens arrive in URL fragment — we serve a page that reads them client-side
-// 6. Page POSTs tokens back to our server, we inject into Electron
-//
-// REQUIRES: http://localhost:47836 added to Supabase redirect URLs in dashboard
+// Listen for OAuth URLs from the renderer via IPC
+ipcMain.on('oauth-url', (event, url) => {
+  console.log('[StoryBreak] Got OAuth URL via IPC');
+  startOAuthFlow(url);
+});
+
+// OAuth flow: start local server, rewrite redirect, open in system browser
 function startOAuthFlow(originalUrl) {
   stopAuthServer();
 
@@ -108,14 +132,14 @@ if (h) {
 </script></body></html>`;
 
   authServer = http.createServer((req, res) => {
-    // Callback page: serves HTML that reads the URL fragment client-side
-    if (req.url.startsWith('/callback')) {
+    // Serve callback page for any GET request (Supabase redirects here)
+    if (req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(CALLBACK_PAGE);
       return;
     }
 
-    // Token receiver: gets tokens POSTed from the callback page
+    // Receive tokens POSTed from the callback page's JavaScript
     if (req.url === '/auth-tokens' && req.method === 'POST') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
@@ -126,6 +150,7 @@ if (h) {
         const accessToken = params.get('access_token');
         const refreshToken = params.get('refresh_token');
         if (accessToken && refreshToken) {
+          console.log('[StoryBreak] Got tokens, injecting session');
           injectSession(accessToken, refreshToken);
         }
         setTimeout(stopAuthServer, 5000);
@@ -138,25 +163,25 @@ if (h) {
   });
 
   authServer.listen(AUTH_PORT, '127.0.0.1', () => {
-    // Rewrite redirect_to to point to our local callback server
+    console.log('[StoryBreak] Auth server listening on port ' + AUTH_PORT);
     try {
       const authUrl = new URL(originalUrl);
       authUrl.searchParams.set('redirect_to', `http://localhost:${AUTH_PORT}/callback`);
-      console.log('[StoryBreak] OAuth: opening browser with redirect to localhost:' + AUTH_PORT);
-      shell.openExternal(authUrl.toString());
+      const finalUrl = authUrl.toString();
+      console.log('[StoryBreak] Opening browser: ' + finalUrl.substring(0, 120) + '...');
+      shell.openExternal(finalUrl);
     } catch (e) {
-      console.error('[StoryBreak] OAuth URL parse error:', e);
+      console.error('[StoryBreak] URL error:', e);
       shell.openExternal(originalUrl);
       stopAuthServer();
     }
   });
 
   authServer.on('error', (err) => {
-    console.error('[StoryBreak] Auth server error:', err.message);
+    console.error('[StoryBreak] Server error:', err.message);
     shell.openExternal(originalUrl);
   });
 
-  // Auto-close server after 5 minutes
   setTimeout(stopAuthServer, 5 * 60 * 1000);
 }
 
@@ -170,7 +195,6 @@ function stopAuthServer() {
 function injectSession(accessToken, refreshToken) {
   if (!mainWindow) return;
 
-  // Bounce dock icon to get user's attention (macOS)
   if (process.platform === 'darwin' && app.dock) {
     app.dock.bounce('critical');
   }
@@ -189,7 +213,6 @@ function injectSession(accessToken, refreshToken) {
           if (error) {
             console.error('StoryBreak session error:', error);
           } else if (data?.session?.user) {
-            // Session set — boot the app
             if (typeof bootApp === 'function') bootApp(data.session.user);
           }
         }
