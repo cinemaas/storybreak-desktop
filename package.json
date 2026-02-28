@@ -7,7 +7,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "postinstall": "/usr/libexec/PlistBuddy -c 'Set :CFBundleName StoryBreak' node_modules/electron/dist/Electron.app/Contents/Info.plist 2>/dev/null; /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName StoryBreak' node_modules/electron/dist/Electron.app/Contents/Info.plist 2>/dev/null; true",
+    "postinstall": "/usr/libexec/PlistBuddy -c 'Set :CFBundleName StoryBreak' node_modules/electron/dist/Electron.app/Contents/Info.plist 2>/dev/null; /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName StoryBreak' node_modules/electron/dist/Electron.app/Contents/Info.plist 2>/dev/null; cp icons/icon.icns node_modules/electron/dist/Electron.app/Contents/Resources/electron.icns 2>/dev/null; true",
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
     "build:all": "electron-builder --mac --win"
