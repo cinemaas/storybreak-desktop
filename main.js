@@ -73,32 +73,23 @@ function startOAuthFlow(originalUrl) {
   stopAuthServer();
 
   authServer = http.createServer((req, res) => {
-    // CORS preflight for cross-origin POST from storybreak.app
-    if (req.method === 'OPTIONS') {
-      res.writeHead(200, {
-        'Access-Control-Allow-Origin': 'https://storybreak.app',
-        'Access-Control-Allow-Methods': 'POST',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      });
-      res.end();
-      return;
-    }
-
     if (req.url === '/auth-tokens' && req.method === 'POST') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
       req.on('end', () => {
-        res.writeHead(200, {
-          'Access-Control-Allow-Origin': 'https://storybreak.app',
-        });
-        res.end('ok');
         const params = new URLSearchParams(body);
         const accessToken = params.get('access_token');
         const refreshToken = params.get('refresh_token');
         if (accessToken && refreshToken) {
           injectSession(accessToken, refreshToken);
         }
-        setTimeout(stopAuthServer, 2000);
+        // Serve a "signed in" page (browser navigated here via form POST)
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(`<!DOCTYPE html><html><head><title>StoryBreak</title>
+<style>body{background:#111213;color:#E8DCC8;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+.box{text-align:center}h2{font-size:20px;margin:0 0 8px}p{color:#888;font-size:14px;margin:0}</style></head>
+<body><div class="box"><h2>\u2713 Signed in to StoryBreak</h2><p>You can close this tab.</p></div></body></html>`);
+        setTimeout(stopAuthServer, 5000);
       });
     } else {
       res.writeHead(404);
