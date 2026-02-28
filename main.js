@@ -71,33 +71,12 @@ function createWindow() {
 // 1. Start local server on fixed port AUTH_PORT
 // 2. Open the original OAuth URL in system browser (no URL modifications)
 // 3. After auth, Supabase redirects to storybreak.app as normal
-// 4. The web app detects our server via a ping to localhost:AUTH_PORT
-// 5. Web app form-POSTs tokens to our server, we inject into Electron
+// 4. The web app silently POSTs tokens to localhost:AUTH_PORT via hidden iframe
+// 5. We inject the tokens into Electron's BrowserWindow
 function startOAuthFlow(originalUrl) {
   stopAuthServer();
 
   authServer = http.createServer((req, res) => {
-    // Ping endpoint: web app checks if desktop app is waiting for tokens
-    if (req.url === '/ping' && req.method === 'GET') {
-      res.writeHead(200, {
-        'Access-Control-Allow-Origin': 'https://storybreak.app',
-        'Content-Type': 'text/plain',
-      });
-      res.end('storybreak-desktop');
-      return;
-    }
-
-    // CORS preflight for the ping check
-    if (req.url === '/ping' && req.method === 'OPTIONS') {
-      res.writeHead(200, {
-        'Access-Control-Allow-Origin': 'https://storybreak.app',
-        'Access-Control-Allow-Methods': 'GET',
-      });
-      res.end();
-      return;
-    }
-
-    // Token endpoint: receives tokens via form POST from the web app
     if (req.url === '/auth-tokens' && req.method === 'POST') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
@@ -108,31 +87,27 @@ function startOAuthFlow(originalUrl) {
         if (accessToken && refreshToken) {
           injectSession(accessToken, refreshToken);
         }
-        // Serve a "signed in" page (browser navigated here via form POST)
+        // Response loads in hidden iframe — user never sees this
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(`<!DOCTYPE html><html><head><title>StoryBreak</title>
-<style>body{background:#111213;color:#E8DCC8;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-.box{text-align:center}h2{font-size:20px;margin:0 0 8px}p{color:#888;font-size:14px;margin:0}</style></head>
-<body><div class="box"><h2>\u2713 Signed in to StoryBreak</h2><p>You can close this tab.</p></div></body></html>`);
+        res.end('ok');
         setTimeout(stopAuthServer, 5000);
       });
     } else {
-      res.writeHead(404);
-      res.end();
+      res.writeHead(200);
+      res.end('ok');
     }
   });
 
   authServer.listen(AUTH_PORT, '127.0.0.1', () => {
-    // Open the original OAuth URL unmodified — no redirect_to changes
     shell.openExternal(originalUrl);
   });
 
   authServer.on('error', () => {
-    // Port in use — open OAuth anyway (bridge won't work but auth still happens on web)
+    // Port in use — open OAuth anyway (auth still works on web)
     shell.openExternal(originalUrl);
   });
 
-  // Auto-close server after 5 minutes if no callback received
+  // Auto-close server after 5 minutes
   setTimeout(stopAuthServer, 5 * 60 * 1000);
 }
 
@@ -145,6 +120,12 @@ function stopAuthServer() {
 
 function injectSession(accessToken, refreshToken) {
   if (!mainWindow) return;
+
+  // Bounce dock icon to get user's attention (macOS)
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.bounce('critical');
+  }
+
   mainWindow.show();
   mainWindow.focus();
 
@@ -152,11 +133,16 @@ function injectSession(accessToken, refreshToken) {
     (async () => {
       try {
         if (typeof _sbc !== 'undefined' && _sbc.auth) {
-          const { error } = await _sbc.auth.setSession({
+          const { data, error } = await _sbc.auth.setSession({
             access_token: ${JSON.stringify(accessToken)},
             refresh_token: ${JSON.stringify(refreshToken)}
           });
-          if (error) console.error('StoryBreak session error:', error);
+          if (error) {
+            console.error('StoryBreak session error:', error);
+          } else if (data?.session?.user) {
+            // Session set — boot the app
+            if (typeof bootApp === 'function') bootApp(data.session.user);
+          }
         }
       } catch(e) { console.error('StoryBreak session inject failed:', e); }
     })();
