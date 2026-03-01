@@ -6,6 +6,9 @@ const APP_URL = 'https://storybreak.app/StoryBreak_Accounts.html';
 const APP_NAME = 'StoryBreak';
 const AUTH_PORT = 47836;
 
+// Set name early so macOS dock/tooltip shows "StoryBreak" not "Electron"
+app.setName(APP_NAME);
+
 let mainWindow;
 let authServer = null;
 
@@ -30,6 +33,11 @@ function createWindow() {
   });
 
   mainWindow.loadURL(APP_URL);
+
+  // Keep the window title as "StoryBreak" regardless of page <title>
+  mainWindow.on('page-title-updated', (event) => {
+    event.preventDefault();
+  });
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
@@ -336,5 +344,3 @@ app.on('window-all-closed', () => {
     app.quit();
   }
 });
-
-app.setName(APP_NAME);
