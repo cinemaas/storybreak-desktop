@@ -246,7 +246,22 @@ function buildMenu() {
     {
       label: 'Edit',
       submenu: [
-        { role: 'undo' },
+        {
+          label: 'Undo',
+          accelerator: 'CmdOrCtrl+Z',
+          click: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.executeJavaScript(`
+                (function() {
+                  var ae = document.activeElement;
+                  var editing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
+                  if (editing) { document.execCommand('undo'); }
+                  else if (typeof undo === 'function') { undo(); }
+                })();
+              `);
+            }
+          },
+        },
         { role: 'redo' },
         { type: 'separator' },
         { role: 'cut' },
