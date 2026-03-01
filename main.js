@@ -252,6 +252,25 @@ function buildMenu() {
       ],
     }] : []),
     {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Window',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => {
+            if (!mainWindow || mainWindow.isDestroyed()) {
+              createWindow();
+            } else {
+              mainWindow.show();
+              mainWindow.focus();
+            }
+          },
+        },
+        { type: 'separator' },
+        isMac ? { role: 'close' } : { role: 'quit' },
+      ],
+    },
+    {
       label: 'Edit',
       submenu: [
         {
@@ -333,8 +352,11 @@ app.whenReady().then(() => {
   buildMenu();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow();
+    } else {
+      mainWindow.show();
+      mainWindow.focus();
     }
   });
 });
