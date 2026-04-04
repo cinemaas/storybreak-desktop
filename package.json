@@ -8,7 +8,7 @@
   "scripts": {
     "start": "electron .",
     "postinstall": "mv node_modules/electron/dist/Electron.app node_modules/electron/dist/StoryBreak.app 2>/dev/null; printf 'StoryBreak.app/Contents/MacOS/Electron' > node_modules/electron/path.txt; /usr/libexec/PlistBuddy -c 'Set :CFBundleName StoryBreak' node_modules/electron/dist/StoryBreak.app/Contents/Info.plist 2>/dev/null; /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName StoryBreak' node_modules/electron/dist/StoryBreak.app/Contents/Info.plist 2>/dev/null; /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier app.storybreak.desktop' node_modules/electron/dist/StoryBreak.app/Contents/Info.plist 2>/dev/null; cp icons/icon.icns node_modules/electron/dist/StoryBreak.app/Contents/Resources/electron.icns 2>/dev/null; true",
-    "build:mac": "electron-builder --mac",
+    "build:mac": "electron-builder --mac && xattr -cr dist/mac-arm64/StoryBreak.app && codesign --force --deep --sign - dist/mac-arm64/StoryBreak.app",
     "build:win": "electron-builder --win",
     "build:all": "electron-builder --mac --win"
   },
