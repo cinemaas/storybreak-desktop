@@ -17,9 +17,10 @@ mac:
   target:
     - dmg
     - zip
-  hardenedRuntime: true
+  hardenedRuntime: false
   gatekeeperAssess: false
   darkModeSupport: true
+  identity: null
 
 win:
   icon: icons/icon.ico
