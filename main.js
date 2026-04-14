@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, Menu, ipcMain } = require('electron');
+const { app, BrowserWindow, shell, Menu, ipcMain, dialog } = require('electron');
 const http = require('http');
 const path = require('path');
 
@@ -93,11 +93,52 @@ function createWindow() {
 
   // Open external links in system browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    // Allow internal StoryBreak URLs
     if (url.startsWith('https://storybreak.app')) {
       return { action: 'allow' };
     }
+    // Allow blank windows (used by export/print preview)
+    if (!url || url === '' || url === 'about:blank') {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 900,
+          height: 700,
+          title: 'StoryBreak',
+          backgroundColor: '#ffffff',
+          webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+          },
+        },
+      };
+    }
     shell.openExternal(url);
     return { action: 'deny' };
+  });
+
+  // Handle file downloads (Fountain, CSV, Backup exports use Blob + <a download>)
+  mainWindow.webContents.session.on('will-download', (event, item) => {
+    const filename = item.getFilename();
+    const ext = path.extname(filename).toLowerCase();
+
+    // Build file type filters based on extension
+    const filters = [];
+    if (ext === '.fountain') filters.push({ name: 'Fountain Script', extensions: ['fountain'] });
+    else if (ext === '.csv') filters.push({ name: 'CSV Spreadsheet', extensions: ['csv'] });
+    else if (ext === '.html') filters.push({ name: 'HTML Document', extensions: ['html'] });
+    filters.push({ name: 'All Files', extensions: ['*'] });
+
+    const savePath = dialog.showSaveDialogSync(mainWindow, {
+      defaultPath: filename,
+      filters: filters,
+    });
+
+    if (savePath) {
+      item.setSavePath(savePath);
+    } else {
+      item.cancel();
+    }
   });
 
   mainWindow.on('closed', () => {
